@@ -42,7 +42,7 @@ func exitErrHandler(c *cli.Context, err error) {
 func createApp(reader io.Reader, stdout io.Writer, stderr io.Writer, exitErrHandler cli.ExitErrHandlerFunc) *cli.App {
 	app := cli.NewApp()
 	app.Name = "desktop"
-	app.Usage = "Tool to generate the Fleet Desktop application"
+	app.Usage = "Tool to generate the Mycroft Desktop application"
 	app.ExitErrHandler = exitErrHandler
 	cli.VersionPrinter = func(c *cli.Context) {
 		version.PrintFull()
@@ -53,7 +53,7 @@ func createApp(reader io.Reader, stdout io.Writer, stderr io.Writer, exitErrHand
 	app.Flags = []cli.Flag{
 		&cli.StringFlag{
 			Name:    "version",
-			Usage:   "Version of the Fleet Desktop application",
+			Usage:   "Version of the Mycroft Desktop application",
 			EnvVars: []string{"FLEET_DESKTOP_VERSION"},
 		},
 		&cli.BoolFlag{
@@ -72,13 +72,13 @@ func createApp(reader io.Reader, stdout io.Writer, stderr io.Writer, exitErrHand
 func macos() *cli.Command {
 	return &cli.Command{
 		Name:        "macos",
-		Usage:       "Creates the Fleet Desktop Application for macOS",
-		Description: "Builds and signs the Fleet Desktop .app bundle for macOS",
+		Usage:       "Creates the Mycroft Desktop application for macOS",
+		Description: "Builds and signs the Mycroft Desktop .app bundle for macOS",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:    "authority",
 				Usage:   "Authority to use on the codesign invocation (if not set, app is not signed)",
-				EnvVars: []string{"FLEET_DESKTOP_APPLE_AUTHORITY"},
+				EnvVars: []string{"FLEET_DESKTOP_APPLE_AUTHORITY", "CODESIGN_IDENTITY"},
 			},
 			&cli.BoolFlag{
 				Name:    "notarize",
@@ -133,7 +133,7 @@ func createMacOSApp(version, authority string, notarize bool) error {
 	)
 
 	if runtime.GOOS != "darwin" {
-		return errors.New(`the "Fleet Desktop" macOS app can only be created from macOS`)
+		return errors.New(`the "Mycroft Desktop" macOS app can only be created from macOS`)
 	}
 
 	defer os.RemoveAll(appDir)
@@ -184,6 +184,23 @@ func createMacOSApp(version, authority string, notarize bool) error {
 		return fmt.Errorf("compile for arm64: %w", err)
 	}
 
+	// Sign individual binaries before creating universal binary
+	if authority != "" {
+		entitlementsPath := filepath.Join("orbit", "cmd", "desktop", "entitlements.plist")
+		
+		// Sign amd64 binary
+		zlog.Info().Str("binary", amdBinaryPath).Msg("Sign fleet-desktop amd64 binary")
+		if err := signBinary(amdBinaryPath, authority, bundleIdentifier, entitlementsPath); err != nil {
+			return fmt.Errorf("sign amd64 binary: %w", err)
+		}
+
+		// Sign arm64 binary
+		zlog.Info().Str("binary", armBinaryPath).Msg("Sign fleet-desktop arm64 binary")
+		if err := signBinary(armBinaryPath, authority, bundleIdentifier, entitlementsPath); err != nil {
+			return fmt.Errorf("sign arm64 binary: %w", err)
+		}
+	}
+
 	// Make the fat exe and remove the separate binaries
 	if err := buildpkg.MakeMacOSFatExecutable(binaryPath, amdBinaryPath, armBinaryPath); err != nil {
 		return fmt.Errorf("make fat executable: %w", err)
@@ -216,7 +233,7 @@ func createMacOSApp(version, authority string, notarize bool) error {
 	if authority != "" {
 		codeSign := exec.Command("codesign", "-s", authority, "-i", bundleIdentifier, "-f", "-v", "--timestamp", "--options", "runtime", appDir)
 
-		zlog.Info().Str("command", codeSign.String()).Msg("Sign Fleet Desktop.app")
+		zlog.Info().Str("command", codeSign.String()).Msg("Sign Mycroft Desktop.app")
 
 		codeSign.Stderr = os.Stderr
 		codeSign.Stdout = os.Stdout
@@ -310,6 +327,30 @@ func compressDir(outPath, dirPath string) error {
 	}
 	if err := out.Close(); err != nil {
 		return fmt.Errorf("close file: %w", err)
+	}
+
+	return nil
+}
+
+// signBinary signs a macOS binary with the specified identity and entitlements
+func signBinary(binaryPath, authority, bundleIdentifier, entitlementsPath string) error {
+	codeSign := exec.Command("codesign",
+		"-s", authority,
+		"-i", bundleIdentifier,
+		"-f",
+		"-v",
+		"--timestamp",
+		"--options", "runtime",
+		"--entitlements", entitlementsPath,
+		binaryPath,
+	)
+
+	zlog.Info().Str("command", codeSign.String()).Msg("Sign binary")
+
+	codeSign.Stderr = os.Stderr
+	codeSign.Stdout = os.Stdout
+	if err := codeSign.Run(); err != nil {
+		return fmt.Errorf("codesign failed: %w", err)
 	}
 
 	return nil

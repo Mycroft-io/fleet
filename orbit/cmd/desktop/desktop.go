@@ -61,7 +61,7 @@ func setupRunners() {
 	}
 
 	if err := runnerGroup.Run(); err != nil {
-		log.Error().Err(err).Msg("Fleet Desktop runners terminated")
+		log.Error().Err(err).Msg("Mycroft Desktop runners terminated")
 		return
 	}
 }
@@ -84,7 +84,7 @@ func main() {
 
 	// Our TUF provided targets must support launching with "--help".
 	if len(os.Args) > 1 && os.Args[1] == "--help" {
-		fmt.Println("Fleet Desktop application executable")
+		fmt.Println("Mycroft Desktop application executable")
 		return
 	}
 	log.Info().Msgf("fleet-desktop version=%s", version)
@@ -121,7 +121,7 @@ func main() {
 	// We've only seen this bug appear on Linux under certain very
 	// specific conditions
 	if runtime.GOOS == "linux" {
-		// Ensure only one instance of Fleet Desktop is running at a time
+		// Ensure only one instance of Mycroft Desktop is running at a time
 		lockFile, err := getLockfile()
 		if err != nil {
 			log.Fatal().Err(err).Msg("could not secure lock file")
@@ -170,7 +170,7 @@ func main() {
 		close(trayAppDisplayed)
 		log.Info().Msg("ready")
 
-		systray.SetTooltip("Fleet Desktop")
+		systray.SetTooltip("Mycroft Desktop")
 
 		// Default to dark theme icon because this seems to be a better fit on Linux (Ubuntu at
 		// least). On macOS this is used as a template icon anyway.
@@ -576,7 +576,7 @@ func (m *mdmMigrationHandler) ShowInstructions() error {
 	return nil
 }
 
-// getLockfile checks for the fleet desktop lock file, and returns an error if it can't secure it.
+// getLockfile checks for the Mycroft Desktop lock file, and returns an error if it can't secure it.
 func getLockfile() (*flock.Flock, error) {
 	dir, err := logDir()
 	if err != nil {
@@ -586,7 +586,7 @@ func getLockfile() (*flock.Flock, error) {
 	dir = filepath.Join(dir, "Fleet")
 
 	lockFilePath := filepath.Join(dir, "fleet-desktop.lock")
-	log.Debug().Msgf("acquiring fleet desktop lockfile: %s", lockFilePath)
+	log.Debug().Msgf("acquiring mycroft desktop lockfile: %s", lockFilePath)
 
 	lock := flock.New(lockFilePath)
 	locked, err := lock.TryLock()
@@ -594,7 +594,7 @@ func getLockfile() (*flock.Flock, error) {
 		return nil, fmt.Errorf("error getting lock on %s: %w", lockFilePath, err)
 	}
 	if !locked {
-		return nil, errors.New("another instance of fleet desktop has the lock")
+		return nil, errors.New("another instance of mycroft desktop has the lock")
 	}
 
 	log.Debug().Msgf("lock acquired on %s", lockFilePath)
