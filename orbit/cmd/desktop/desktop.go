@@ -164,7 +164,7 @@ func main() {
 		systray.SetTemplateIcon(iconDark, iconDark)
 
 		// Add a disabled menu item with the current version
-		versionItem := systray.AddMenuItem(fmt.Sprintf("Mycroft Desktop"), "")
+		versionItem := systray.AddMenuItem("Mycroft Desktop v1.2.0", "")
 		versionItem.Disable()
 		systray.AddSeparator()
 
@@ -172,9 +172,6 @@ func main() {
 		migrateMDMItem.Disable()
 		// this item is only shown if certain conditions are met below.
 		migrateMDMItem.Hide()
-
-		myDeviceItem := systray.AddMenuItem("Connecting...", "")
-		myDeviceItem.Disable()
 
 		selfServiceItem := systray.AddMenuItem("Self-service", "")
 		selfServiceItem.Disable()
@@ -219,8 +216,6 @@ func main() {
 
 		disableTray := func() {
 			log.Debug().Msg("disabling tray items")
-			myDeviceItem.SetTitle("Connecting...")
-			myDeviceItem.Disable()
 			transparencyItem.Disable()
 			selfServiceItem.Disable()
 			selfServiceItem.Hide()
@@ -266,7 +261,7 @@ func main() {
 			log.Debug().Msg("successfully refetched the token from disk")
 		}
 
-		// checkToken performs API test calls to enable the "My device" item as
+		// checkToken performs API test calls to enable the tray items as
 		// soon as the device auth token is registered by Fleet.
 		checkToken := func() <-chan interface{} {
 			done := make(chan interface{})
@@ -282,8 +277,6 @@ func main() {
 
 					if err == nil || errors.Is(err, service.ErrMissingLicense) {
 						log.Debug().Msg("enabling tray items")
-						myDeviceItem.SetTitle("My device")
-						myDeviceItem.Enable()
 						transparencyItem.Enable()
 
 						// Hide Self-Service for Free tier
@@ -347,7 +340,6 @@ func main() {
 				case err == nil:
 					// OK
 				case errors.Is(err, service.ErrMissingLicense):
-					myDeviceItem.SetTitle("My device")
 					continue
 				case errors.Is(err, service.ErrUnauthenticated):
 					disableTray()
@@ -358,8 +350,7 @@ func main() {
 					continue
 				}
 
-				refreshMenuItems(sum.DesktopSummary, selfServiceItem, myDeviceItem)
-				myDeviceItem.Enable()
+				refreshMenuItems(sum.DesktopSummary, selfServiceItem)
 
 				// Check our file to see if we should migrate
 				var migrationType string
@@ -441,13 +432,6 @@ func main() {
 		go func() {
 			for {
 				select {
-				case <-myDeviceItem.ClickedCh:
-					openURL := client.BrowserPoliciesURL(tokenReader.GetCached())
-					if err := open.Browser(openURL); err != nil {
-						log.Error().Err(err).Str("url", openURL).Msg("open browser policies")
-					}
-					// Also refresh the device status by forcing the polling ticker to fire
-					summaryTicker.Reset(1 * time.Millisecond)
 				case <-transparencyItem.ClickedCh:
 					openURL := client.BrowserTransparencyURL(tokenReader.GetCached())
 					if err := open.Browser(openURL); err != nil {
@@ -531,7 +515,7 @@ func main() {
 	systray.Run(onReady, onExit)
 }
 
-func refreshMenuItems(sum fleet.DesktopSummary, selfServiceItem *systray.MenuItem, myDeviceItem *systray.MenuItem) {
+func refreshMenuItems(sum fleet.DesktopSummary, selfServiceItem *systray.MenuItem) {
 	// Check for null for backward compatibility with an old Fleet server
 	if sum.SelfService != nil && !*sum.SelfService {
 		selfServiceItem.Disable()
@@ -539,31 +523,6 @@ func refreshMenuItems(sum fleet.DesktopSummary, selfServiceItem *systray.MenuIte
 	} else {
 		selfServiceItem.Enable()
 		selfServiceItem.Show()
-	}
-
-	failingPolicies := 0
-	if sum.FailingPolicies != nil {
-		failingPolicies = int(*sum.FailingPolicies) //nolint:gosec // dismiss G115
-	}
-
-	if failingPolicies > 0 {
-		if runtime.GOOS == "windows" {
-			// Windows (or maybe just the systray library?) doesn't support color emoji
-			// in the system tray menu, so we use text as an alternative.
-			if failingPolicies == 1 {
-				myDeviceItem.SetTitle("My device (1 issue)")
-			} else {
-				myDeviceItem.SetTitle(fmt.Sprintf("My device (%d issues)", failingPolicies))
-			}
-		} else {
-			myDeviceItem.SetTitle(fmt.Sprintf("🔴 My device (%d)", failingPolicies))
-		}
-	} else {
-		if runtime.GOOS == "windows" {
-			myDeviceItem.SetTitle("My device")
-		} else {
-			myDeviceItem.SetTitle("🟢 My device")
-		}
 	}
 }
 
