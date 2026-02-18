@@ -89,6 +89,8 @@ type Options struct {
 	Debug bool
 	// Desktop determines whether to package the Fleet Desktop application.
 	Desktop bool
+	// DesktopAppLocalPath is an optional path to a prebuilt Fleet Desktop bundle to include instead of downloading from TUF.
+	DesktopAppLocalPath string
 	// OrbitUpdateInterval is the interval that Orbit will use to check for updates.
 	OrbitUpdateInterval time.Duration
 	// LegacyVarLibSymlink indicates whether Orbit is legacy (< 0.0.11),
@@ -133,6 +135,9 @@ type Options struct {
 	NativePlatform string
 	// CustomOutfile is the custom output file name for the package.
 	CustomOutfile string
+	// ProductName is the name of the product shown in installer dialogs.
+	// Defaults to "Fleet osquery" if not specified.
+	ProductName string
 }
 
 const (

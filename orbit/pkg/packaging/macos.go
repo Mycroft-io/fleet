@@ -1,15 +1,20 @@
 package packaging
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strings"
 
 	"github.com/Masterminds/semver"
 	"github.com/fleetdm/fleet/v4/orbit/pkg/constant"
@@ -65,9 +70,11 @@ func BuildPkg(opt Options) (string, error) {
 	}
 
 	if opt.Desktop {
-		updateOpt.Targets[constant.DesktopTUFTargetName] = update.DesktopMacOSTarget
-		// Override default channel with the provided value.
-		updateOpt.Targets.SetTargetChannel(constant.DesktopTUFTargetName, opt.DesktopChannel)
+		if opt.DesktopAppLocalPath == "" {
+			updateOpt.Targets[constant.DesktopTUFTargetName] = update.DesktopMacOSTarget
+			// Override default channel with the provided value.
+			updateOpt.Targets.SetTargetChannel(constant.DesktopTUFTargetName, opt.DesktopChannel)
+		}
 	}
 
 	// Override default channels with the provided values.
@@ -82,6 +89,13 @@ func BuildPkg(opt Options) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("initialize updates: %w", err)
 	}
+
+	if opt.Desktop && opt.DesktopAppLocalPath != "" {
+		if err := installLocalDesktop(opt, orbitRoot, updatesData); err != nil {
+			return "", err
+		}
+	}
+
 	log.Debug().Stringer("data", updatesData).Msg("updates initialized")
 	if opt.Version == "" {
 		// We set the package version to orbit's latest version.
@@ -327,6 +341,149 @@ func writeUpdateClientCertificate(opt Options, orbitRoot string) error {
 	dstPath = filepath.Join(orbitRoot, constant.UpdateTLSClientKeyFileName)
 	if err := file.Copy(opt.UpdateTLSClientKey, dstPath, constant.DefaultFileMode); err != nil {
 		return fmt.Errorf("write update key file: %w", err)
+	}
+	return nil
+}
+
+func installLocalDesktop(opt Options, orbitRoot string, updatesData *UpdatesData) error {
+	desktopInfo := update.DesktopMacOSTarget
+	path, execPath, dirPath := update.LocalTargetPaths(orbitRoot, constant.DesktopTUFTargetName, desktopInfo)
+
+	if err := secure.MkdirAll(filepath.Dir(path), constant.DefaultDirMode); err != nil {
+		return fmt.Errorf("create desktop target directory: %w", err)
+	}
+
+	if err := file.Copy(opt.DesktopAppLocalPath, path, 0o755); err != nil {
+		return fmt.Errorf("copy local Fleet Desktop bundle: %w", err)
+	}
+
+	if strings.HasSuffix(path, ".tar.gz") {
+		if err := os.RemoveAll(dirPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("remove existing desktop bundle: %w", err)
+		}
+		if err := extractTarGz(path); err != nil {
+			return fmt.Errorf("extract local desktop bundle: %w", err)
+		}
+
+		legacyDir := filepath.Join(filepath.Dir(path), "Fleet Desktop.app")
+		desiredDir := filepath.Join(filepath.Dir(path), desktopInfo.ExtractedExecSubPath[0])
+		if _, err := os.Stat(desiredDir); err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				return fmt.Errorf("inspect extracted desktop bundle: %w", err)
+			}
+			if _, legacyErr := os.Stat(legacyDir); legacyErr == nil {
+				if err := os.Rename(legacyDir, desiredDir); err != nil {
+					return fmt.Errorf("rename legacy Fleet Desktop bundle: %w", err)
+				}
+			} else if legacyErr != nil && !errors.Is(legacyErr, fs.ErrNotExist) {
+				return fmt.Errorf("inspect legacy Fleet Desktop bundle: %w", legacyErr)
+			}
+		}
+
+		if err := ensureLegacyDesktopSymlink(desiredDir, legacyDir); err != nil {
+			return err
+		}
+	}
+
+	updatesData.DesktopPath = execPath
+	updatesData.DesktopVersion = "local"
+
+	return nil
+}
+
+func extractTarGz(path string) error {
+	tarGzFile, err := secure.OpenFile(path, os.O_RDONLY, 0o755)
+	if err != nil {
+		return fmt.Errorf("open %q: %w", path, err)
+	}
+	defer tarGzFile.Close()
+
+	gzipReader, err := gzip.NewReader(tarGzFile)
+	if err != nil {
+		return fmt.Errorf("gzip reader %q: %w", path, err)
+	}
+	defer gzipReader.Close()
+
+	tarReader := tar.NewReader(gzipReader)
+	for {
+		header, err := tarReader.Next()
+		switch {
+		case err == nil:
+			// OK
+		case errors.Is(err, io.EOF):
+			return nil
+		default:
+			return fmt.Errorf("tar reader %q: %w", path, err)
+		}
+
+		if strings.Contains(header.Name, "..") {
+			return fmt.Errorf("invalid path in tar.gz: %q", header.Name)
+		}
+
+		targetPath := filepath.Join(filepath.Dir(path), header.Name)
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := secure.MkdirAll(targetPath, constant.DefaultDirMode); err != nil {
+				return fmt.Errorf("mkdir %q: %w", header.Name, err)
+			}
+		case tar.TypeReg:
+			err := func() error {
+				outFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY, header.FileInfo().Mode())
+				if err != nil {
+					return fmt.Errorf("failed to create %q: %w", header.Name, err)
+				}
+				defer outFile.Close()
+
+				if _, err := io.Copy(outFile, tarReader); err != nil {
+					return fmt.Errorf("failed to copy %q: %w", header.Name, err)
+				}
+				return nil
+			}()
+			if err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("unknown flag type %q: %d", header.Name, header.Typeflag)
+		}
+	}
+}
+
+func ensureLegacyDesktopSymlink(desiredDir, legacyDir string) error {
+	if desiredDir == "" || legacyDir == "" {
+		return nil
+	}
+
+	relativeTarget := filepath.Base(desiredDir)
+	if relativeTarget == "" {
+		return nil
+	}
+
+	info, err := os.Lstat(legacyDir)
+	switch {
+	case err == nil:
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, targetErr := os.Readlink(legacyDir)
+			if targetErr != nil {
+				return fmt.Errorf("read legacy desktop symlink: %w", targetErr)
+			}
+			if target == relativeTarget {
+				return nil
+			}
+			if removeErr := os.Remove(legacyDir); removeErr != nil {
+				return fmt.Errorf("remove stale legacy desktop symlink: %w", removeErr)
+			}
+		} else {
+			return nil
+		}
+	case errors.Is(err, fs.ErrNotExist):
+		// create symlink below
+	default:
+		return fmt.Errorf("inspect legacy desktop entry: %w", err)
+	}
+
+	if err := os.Symlink(relativeTarget, legacyDir); err != nil && !errors.Is(err, fs.ErrExist) {
+		return fmt.Errorf("create legacy desktop symlink: %w", err)
 	}
 	return nil
 }
